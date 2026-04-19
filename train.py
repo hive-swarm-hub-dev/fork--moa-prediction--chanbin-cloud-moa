@@ -115,18 +115,16 @@ for i in range(len(target_cols)):
 t1 = time.time() - start
 print(f"Stage 1 done in {t1:.1f}s")
 
-# ── Stage 2: LR on [original features + OOF SVD-compressed meta-features] ──────
-# SVD-20 compresses 206 OOF meta-predictions; StandardScaler valid since
-# both meta_train (OOF) and meta_test (full S1) are out-of-sample predictions.
-svd = TruncatedSVD(n_components=120, random_state=42)
-meta_train_svd = svd.fit_transform(meta_train)
-meta_test_svd = svd.transform(meta_test_trt)
-svd_scaler = StandardScaler()
-meta_train_svd = svd_scaler.fit_transform(meta_train_svd)
-meta_test_svd = svd_scaler.transform(meta_test_svd)
-X_trt2 = np.hstack([X_trt, meta_train_svd])
-X_test2 = np.hstack([X_test_trt, meta_test_svd])
-print(f"SVD: {svd.n_components} components (OOF+scaled), var={svd.explained_variance_ratio_.sum():.3f}")
+# ── Stage 2: LR on [original features + OOF PCA-whitened meta-features] ──────
+# PCA(whiten=True) centers meta-predictions before decomposition, capturing
+# co-variation RELATIVE TO each target's baseline probability. This is more
+# informative than TruncatedSVD (no centering) + StandardScaler.
+pca_meta = PCA(n_components=120, whiten=True, random_state=42)
+meta_train_m = pca_meta.fit_transform(meta_train)
+meta_test_m = pca_meta.transform(meta_test_trt)
+X_trt2 = np.hstack([X_trt, meta_train_m])
+X_test2 = np.hstack([X_test_trt, meta_test_m])
+print(f"PCA meta: {pca_meta.n_components} components (OOF+whitened), var={pca_meta.explained_variance_ratio_.sum():.3f}")
 print(f"\nStage 2: fitting {len(target_cols)} LR models ({X_trt2.shape[1]} features)...")
 
 preds = np.full((len(test_features), len(target_cols)), 1e-4)
