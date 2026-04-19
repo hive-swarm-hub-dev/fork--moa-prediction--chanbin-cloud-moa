@@ -93,7 +93,7 @@ def _s2(i, X_tr, y_col, X_te, n_tr):
     n_pos = int(y_col.sum())
     if n_pos < 3:
         return i, np.full(len(X_te), max(n_pos / n_tr, 1e-5))
-    lr = LogisticRegression(C=2.0, penalty="l1", solver="liblinear", max_iter=200, random_state=42)
+    lr = LogisticRegression(C=5.0, penalty="l1", solver="liblinear", max_iter=200, random_state=42)
     lr.fit(X_tr, y_col)
     return i, np.clip(lr.predict_proba(X_te)[:, 1], 1e-5, 1 - 1e-5)
 
@@ -131,7 +131,7 @@ t1 = time.time() - start
 print(f"Stage 1 done in {t1:.1f}s")
 
 # ── Stage 2: LR on [original features + OOF PCA-whitened meta-features] ──────
-pca_meta = PCA(n_components=25, whiten=True, random_state=42)
+pca_meta = PCA(n_components=30, whiten=True, random_state=42)
 meta_train_m = pca_meta.fit_transform(meta_train)
 meta_test_m = pca_meta.transform(meta_test_trt)
 
@@ -139,7 +139,7 @@ meta_test_m = pca_meta.transform(meta_test_trt)
 n_ctrl = int(is_ctrl_train.sum())
 X_ctrl = X_train[is_ctrl_train]
 y_ctrl = y_train[is_ctrl_train]  # all zeros
-meta_ctrl = np.zeros((n_ctrl, 25))
+meta_ctrl = np.zeros((n_ctrl, 30))
 X_s2_train = np.vstack([np.hstack([X_trt, meta_train_m]),
                          np.hstack([X_ctrl, meta_ctrl])])
 y_s2_train = np.vstack([y_trt, y_ctrl])
@@ -147,9 +147,9 @@ n_s2_train = len(X_s2_train)
 
 n_ctrl_test = int(is_ctrl_test.sum())
 X_ctrl_test = X_test[is_ctrl_test]
-meta_ctrl_test = np.zeros((n_ctrl_test, 25))
+meta_ctrl_test = np.zeros((n_ctrl_test, 30))
 # Full test: treatment + control (aligned to test_features order)
-X_test2_full = np.empty((len(test_features), X_trt.shape[1] + 25))
+X_test2_full = np.empty((len(test_features), X_trt.shape[1] + 30))
 X_test2_full[trt_test_mask] = np.hstack([X_test_trt, meta_test_m])
 X_test2_full[is_ctrl_test] = np.hstack([X_ctrl_test, meta_ctrl_test])
 print(f"PCA meta: {pca_meta.n_components} components (OOF+whitened), var={pca_meta.explained_variance_ratio_.sum():.3f}")
