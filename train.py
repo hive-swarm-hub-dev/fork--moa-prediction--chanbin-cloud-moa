@@ -88,7 +88,7 @@ for fold_i, (tr_idx, val_idx) in enumerate(kf.split(X_trt)):
             meta_train[val_idx, i] = n_pos_f / len(tr_idx)
             continue
 
-        lr = LogisticRegression(C=0.5, solver="liblinear", max_iter=200, random_state=42)
+        lr = LogisticRegression(C=1.0, solver="liblinear", max_iter=200, random_state=42)
         lr.fit(X_tr_f, y_f)
         meta_train[val_idx, i] = lr.predict_proba(X_val_f)[:, 1]
 
@@ -105,7 +105,7 @@ for i in range(len(target_cols)):
         meta_test_trt[:, i] = pos_frac
         continue
 
-    lr = LogisticRegression(C=0.5, solver="liblinear", max_iter=200, random_state=42)
+    lr = LogisticRegression(C=1.0, solver="liblinear", max_iter=200, random_state=42)
     lr.fit(X_trt, y)
     meta_test_trt[:, i] = lr.predict_proba(X_test_trt)[:, 1]
 
