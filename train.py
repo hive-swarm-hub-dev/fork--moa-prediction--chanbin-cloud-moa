@@ -72,7 +72,7 @@ def _s1_oof(i, X_tr, X_val, y_col, n_tr):
     n_pos = int(y_col.sum())
     if n_pos < 2:
         return i, np.full(len(X_val), n_pos / n_tr)
-    lr = LogisticRegression(C=2.0, solver="liblinear", max_iter=100, random_state=42)
+    lr = LogisticRegression(C=5.0, solver="liblinear", max_iter=100, random_state=42)
     lr.fit(X_tr, y_col)
     return i, lr.predict_proba(X_val)[:, 1]
 
@@ -81,7 +81,7 @@ def _s1_full(i, X_tr, y_col, X_te, n_tr):
     n_pos = int(y_col.sum())
     if n_pos < 3:
         return i, np.full(len(X_te), n_pos / n_tr)
-    lr = LogisticRegression(C=2.0, solver="liblinear", max_iter=100, random_state=42)
+    lr = LogisticRegression(C=5.0, solver="liblinear", max_iter=100, random_state=42)
     lr.fit(X_tr, y_col)
     return i, lr.predict_proba(X_te)[:, 1]
 
