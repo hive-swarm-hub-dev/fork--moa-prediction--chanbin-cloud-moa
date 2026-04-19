@@ -134,19 +134,35 @@ print(f"Stage 1 done in {t1:.1f}s")
 pca_meta = PCA(n_components=25, whiten=True, random_state=42)
 meta_train_m = pca_meta.fit_transform(meta_train)
 meta_test_m = pca_meta.transform(meta_test_trt)
-X_trt2 = np.hstack([X_trt, meta_train_m])
-X_test2 = np.hstack([X_test_trt, meta_test_m])
+
+# Include control training samples (y=0, zero meta) to improve Stage 2 boundary
+n_ctrl = int(is_ctrl_train.sum())
+X_ctrl = X_train[is_ctrl_train]
+y_ctrl = y_train[is_ctrl_train]  # all zeros
+meta_ctrl = np.zeros((n_ctrl, 25))
+X_s2_train = np.vstack([np.hstack([X_trt, meta_train_m]),
+                         np.hstack([X_ctrl, meta_ctrl])])
+y_s2_train = np.vstack([y_trt, y_ctrl])
+n_s2_train = len(X_s2_train)
+
+n_ctrl_test = int(is_ctrl_test.sum())
+X_ctrl_test = X_test[is_ctrl_test]
+meta_ctrl_test = np.zeros((n_ctrl_test, 25))
+# Full test: treatment + control (aligned to test_features order)
+X_test2_full = np.empty((len(test_features), X_trt.shape[1] + 25))
+X_test2_full[trt_test_mask] = np.hstack([X_test_trt, meta_test_m])
+X_test2_full[is_ctrl_test] = np.hstack([X_ctrl_test, meta_ctrl_test])
 print(f"PCA meta: {pca_meta.n_components} components (OOF+whitened), var={pca_meta.explained_variance_ratio_.sum():.3f}")
-print(f"\nStage 2: fitting {len(target_cols)} LR models ({X_trt2.shape[1]} features) [parallel]...")
+print(f"\nStage 2: fitting {len(target_cols)} LR models ({X_s2_train.shape[1]} features, +{n_ctrl} ctrl) [parallel]...")
 
 preds = np.full((len(test_features), len(target_cols)), 1e-4)
 
 res = Parallel(n_jobs=-1, prefer="threads")(
-    delayed(_s2)(i, X_trt2, y_trt[:, i], X_test2, n_trt)
+    delayed(_s2)(i, X_s2_train, y_s2_train[:, i], X_test2_full, n_s2_train)
     for i in range(len(target_cols))
 )
 for i, pred in res:
-    preds[trt_test_mask, i] = pred
+    preds[:, i] = pred  # predict for ALL test samples
 
 elapsed = time.time() - start
 print(f"Stage 2 done. Total: {elapsed:.1f}s")
