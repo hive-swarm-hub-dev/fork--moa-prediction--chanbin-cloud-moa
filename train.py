@@ -131,7 +131,7 @@ t1 = time.time() - start
 print(f"Stage 1 done in {t1:.1f}s")
 
 # ── Stage 2: LR on [original features + OOF PCA-whitened meta-features] ──────
-pca_meta = PCA(n_components=75, whiten=True, random_state=42)
+pca_meta = PCA(n_components=100, whiten=True, random_state=42)
 meta_train_m = pca_meta.fit_transform(meta_train)
 meta_test_m = pca_meta.transform(meta_test_trt)
 
@@ -139,7 +139,7 @@ meta_test_m = pca_meta.transform(meta_test_trt)
 n_ctrl = int(is_ctrl_train.sum())
 X_ctrl = X_train[is_ctrl_train]
 y_ctrl = y_train[is_ctrl_train]  # all zeros
-meta_ctrl = np.zeros((n_ctrl, 75))
+meta_ctrl = np.zeros((n_ctrl, 100))
 X_s2_train = np.vstack([np.hstack([X_trt, meta_train_m]),
                          np.hstack([X_ctrl, meta_ctrl])])
 y_s2_train = np.vstack([y_trt, y_ctrl])
@@ -147,9 +147,9 @@ n_s2_train = len(X_s2_train)
 
 n_ctrl_test = int(is_ctrl_test.sum())
 X_ctrl_test = X_test[is_ctrl_test]
-meta_ctrl_test = np.zeros((n_ctrl_test, 75))
+meta_ctrl_test = np.zeros((n_ctrl_test, 100))
 # Full test: treatment + control (aligned to test_features order)
-X_test2_full = np.empty((len(test_features), X_trt.shape[1] + 75))
+X_test2_full = np.empty((len(test_features), X_trt.shape[1] + 100))
 X_test2_full[trt_test_mask] = np.hstack([X_test_trt, meta_test_m])
 X_test2_full[is_ctrl_test] = np.hstack([X_ctrl_test, meta_ctrl_test])
 print(f"PCA meta: {pca_meta.n_components} components (OOF+whitened), var={pca_meta.explained_variance_ratio_.sum():.3f}")
