@@ -131,7 +131,7 @@ t1 = time.time() - start
 print(f"Stage 1 done in {t1:.1f}s")
 
 # ── Stage 2: LR on [original features + OOF PCA-whitened meta-features] ──────
-pca_meta = PCA(n_components=100, whiten=True, random_state=42)
+pca_meta = PCA(n_components=50, whiten=True, random_state=42)
 meta_train_m = pca_meta.fit_transform(meta_train)
 meta_test_m = pca_meta.transform(meta_test_trt)
 X_trt2 = np.hstack([X_trt, meta_train_m])
