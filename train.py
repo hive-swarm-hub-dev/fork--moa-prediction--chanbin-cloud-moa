@@ -1,21 +1,22 @@
 """
-Two-stage stacking LR with whitened PCA.
+Two-stage stacking LR: whitened PCA + 2-fold OOF SVD-compressed meta-features.
 
-Best so far: whitened PCA (80/30, C=0.5) = -0.016141.
+Score history:
+  baseline (no stacking, whitened PCA C=0.5):  -0.016141
+  uncompressed stacking (319 features):         -0.016100
+  SVD-20 stacking (133 features, in-sample):    -0.016092  ← committed best
+  SVD-20 + StandardScaler (in-sample):          -0.016124  ← scaling hurts (distrib shift)
+  This attempt: 2-fold OOF so meta_train and meta_test both out-of-sample;
+  then StandardScaler is valid since both distributions match.
 
-Stage 1: per-target whitened-PCA LR — same as best model.
-  Also stores training-set predictions as meta-features.
-Stage 2: per-target LR on [original 113 features + 206 stage-1 predictions].
-  Captures strong target correlations (e.g., nfkb/proteasome: r=0.92,
-  pdgfr/kit: r=0.91) — if stage-1 predicts proteasome inhibition high,
-  stage-2 boosts nfkb_inhibitor prediction.
-
-Timing estimate: ~64s (stage 1) + ~180s (stage 2) = ~244s total.
+Timing estimate: OOF(35+35) + full_S1(70) + S2(74) ≈ 214s.
 """
 import pandas as pd
 import numpy as np
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, TruncatedSVD
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import KFold
+from sklearn.preprocessing import StandardScaler
 import time
 
 start = time.time()
@@ -65,27 +66,48 @@ X_test_trt = X_test[trt_test_mask]
 n_trt = int(trt_mask.sum())
 
 print(f"Treatment train: {n_trt}, Treatment test: {int(trt_test_mask.sum())}")
-print(f"Stage 1 features: {X_trt.shape[1]}, Stage 2 features: {X_trt.shape[1] + len(target_cols)}")
+print(f"Stage 1 features: {X_trt.shape[1]}")
 
-# ── Stage 1: baseline whitened-PCA LR ──────────────────────────────────────
-print(f"\nStage 1: fitting {len(target_cols)} LR models (whitened PCA)...")
-meta_train = np.zeros((n_trt, len(target_cols)))        # stage-1 preds on training set
-meta_test = np.full((int(trt_test_mask.sum()), len(target_cols)), 1e-4)
+# ── Stage 1: 2-fold OOF meta-predictions ──────────────────────────────────────
+# OOF ensures meta_train and meta_test are both out-of-sample predictions,
+# matching distributions so StandardScaler on SVD components is valid.
+kf = KFold(n_splits=2, shuffle=True, random_state=42)
+meta_train = np.zeros((n_trt, len(target_cols)))
+meta_test_trt = np.full((int(trt_test_mask.sum()), len(target_cols)), 1e-4)
 
-for i, col in enumerate(target_cols):
+print(f"\nStage 1 OOF: fitting {len(target_cols)} LR models per fold...")
+for fold_i, (tr_idx, val_idx) in enumerate(kf.split(X_trt)):
+    X_tr_f, X_val_f = X_trt[tr_idx], X_trt[val_idx]
+    y_tr_f = y_trt[tr_idx]
+
+    for i in range(len(target_cols)):
+        y_f = y_tr_f[:, i]
+        n_pos_f = int(y_f.sum())
+
+        if n_pos_f < 2:
+            meta_train[val_idx, i] = n_pos_f / len(tr_idx)
+            continue
+
+        lr = LogisticRegression(C=0.5, solver="liblinear", max_iter=200, random_state=42)
+        lr.fit(X_tr_f, y_f)
+        meta_train[val_idx, i] = lr.predict_proba(X_val_f)[:, 1]
+
+    print(f"  Fold {fold_i + 1} done: {time.time() - start:.1f}s")
+
+# Full Stage 1 on all training data → test meta-predictions
+print(f"\nStage 1 full (test preds): fitting {len(target_cols)} LR models...")
+for i in range(len(target_cols)):
     y = y_trt[:, i]
     n_pos = int(y.sum())
     pos_frac = n_pos / n_trt
 
     if n_pos < 3:
-        meta_train[:, i] = pos_frac
-        meta_test[:, i] = pos_frac
+        meta_test_trt[:, i] = pos_frac
         continue
 
     lr = LogisticRegression(C=0.5, solver="liblinear", max_iter=200, random_state=42)
     lr.fit(X_trt, y)
-    meta_train[:, i] = lr.predict_proba(X_trt)[:, 1]
-    meta_test[:, i] = lr.predict_proba(X_test_trt)[:, 1]
+    meta_test_trt[:, i] = lr.predict_proba(X_test_trt)[:, 1]
 
     if (i + 1) % 50 == 0:
         print(f"  [{i+1}/{len(target_cols)}] elapsed: {time.time()-start:.1f}s")
@@ -93,10 +115,18 @@ for i, col in enumerate(target_cols):
 t1 = time.time() - start
 print(f"Stage 1 done in {t1:.1f}s")
 
-# ── Stage 2: LR on [original features + stage-1 predictions] ───────────────
-# Stage-1 predictions encode target correlations: high P(proteasome) → high P(nfkb)
-X_trt2 = np.hstack([X_trt, meta_train])
-X_test2 = np.hstack([X_test_trt, meta_test])
+# ── Stage 2: LR on [original features + OOF SVD-compressed meta-features] ──────
+# SVD-20 compresses 206 OOF meta-predictions; StandardScaler valid since
+# both meta_train (OOF) and meta_test (full S1) are out-of-sample predictions.
+svd = TruncatedSVD(n_components=20, random_state=42)
+meta_train_svd = svd.fit_transform(meta_train)
+meta_test_svd = svd.transform(meta_test_trt)
+svd_scaler = StandardScaler()
+meta_train_svd = svd_scaler.fit_transform(meta_train_svd)
+meta_test_svd = svd_scaler.transform(meta_test_svd)
+X_trt2 = np.hstack([X_trt, meta_train_svd])
+X_test2 = np.hstack([X_test_trt, meta_test_svd])
+print(f"SVD: {svd.n_components} components (OOF+scaled), var={svd.explained_variance_ratio_.sum():.3f}")
 print(f"\nStage 2: fitting {len(target_cols)} LR models ({X_trt2.shape[1]} features)...")
 
 preds = np.full((len(test_features), len(target_cols)), 1e-4)
