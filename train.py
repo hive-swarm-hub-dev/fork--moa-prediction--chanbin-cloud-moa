@@ -93,7 +93,7 @@ def _s2(i, X_tr, y_col, X_te, n_tr):
     n_pos = int(y_col.sum())
     if n_pos < 3:
         return i, np.full(len(X_te), max(n_pos / n_tr, 1e-5))
-    lr = LogisticRegression(C=0.1, penalty="l1", solver="liblinear", max_iter=200, random_state=42)
+    lr = LogisticRegression(C=0.2, penalty="l1", solver="liblinear", max_iter=200, random_state=42)
     lr.fit(X_tr, y_col)
     return i, np.clip(lr.predict_proba(X_te)[:, 1], 1e-5, 1 - 1e-5)
 
