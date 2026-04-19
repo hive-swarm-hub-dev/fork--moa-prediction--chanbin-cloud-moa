@@ -34,8 +34,8 @@ all_feats = pd.concat([train_features, test_features], ignore_index=True)
 n_train = len(train_features)
 
 # Whitened PCA
-pca_g = PCA(n_components=80, whiten=True, random_state=42)
-pca_c = PCA(n_components=30, whiten=True, random_state=42)
+pca_g = PCA(n_components=85, whiten=True, random_state=42)
+pca_c = PCA(n_components=35, whiten=True, random_state=42)
 g_pca = pca_g.fit_transform(all_feats[gene_cols].values)
 c_pca = pca_c.fit_transform(all_feats[cell_cols].values)
 
