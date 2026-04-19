@@ -11,7 +11,7 @@ Score history:
 import pandas as pd
 import numpy as np
 from sklearn.decomposition import PCA
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.model_selection import KFold
 from joblib import Parallel, delayed
 import time
@@ -89,6 +89,24 @@ def _s1_full(i, X_tr, y_col, X_te, n_tr):
     return i, lr.predict_proba(X_te)[:, 1]
 
 
+def _s1_ridge_oof(i, X_tr, X_val, y_col, n_tr):
+    n_pos = int(y_col.sum())
+    if n_pos < 2:
+        return i, np.full(len(X_val), n_pos / n_tr)
+    r = Ridge(alpha=1.0)
+    r.fit(X_tr, y_col)
+    return i, r.predict(X_val)
+
+
+def _s1_ridge_full(i, X_tr, y_col, X_te, n_tr):
+    n_pos = int(y_col.sum())
+    if n_pos < 3:
+        return i, np.full(len(X_te), n_pos / n_tr)
+    r = Ridge(alpha=1.0)
+    r.fit(X_tr, y_col)
+    return i, r.predict(X_te)
+
+
 def _s2(i, X_tr, y_col, X_te, n_tr):
     n_pos = int(y_col.sum())
     if n_pos < 3:
@@ -98,12 +116,13 @@ def _s2(i, X_tr, y_col, X_te, n_tr):
     return i, np.clip(lr.predict_proba(X_te)[:, 1], 1e-5, 1 - 1e-5)
 
 
-# ── Stage 1: 2-fold OOF meta-predictions (parallel) ──────────────────────────
+# ── Stage 1: 2-fold OOF meta-predictions (LR + Ridge concat → PCA) ───────────
 kf = KFold(n_splits=2, shuffle=True, random_state=42)
-meta_train = np.zeros((n_trt, len(target_cols)))
-meta_test_trt = np.full((int(trt_test_mask.sum()), len(target_cols)), 1e-4)
+meta_lr = np.zeros((n_trt, len(target_cols)))
+meta_ridge = np.zeros((n_trt, len(target_cols)))
+n_test_trt = int(trt_test_mask.sum())
 
-print(f"\nStage 1 OOF: fitting {len(target_cols)} LR models per fold [parallel]...")
+print(f"\nStage 1 OOF (LR + Ridge): fitting {len(target_cols)} models per fold [parallel]...")
 for fold_i, (tr_idx, val_idx) in enumerate(kf.split(X_trt)):
     X_tr_f = X_trt[tr_idx]
     X_val_f = X_trt[val_idx]
@@ -115,17 +134,37 @@ for fold_i, (tr_idx, val_idx) in enumerate(kf.split(X_trt)):
         for i in range(len(target_cols))
     )
     for i, pred in res:
-        meta_train[val_idx, i] = pred
+        meta_lr[val_idx, i] = pred
+
+    res_r = Parallel(n_jobs=-1, prefer="threads")(
+        delayed(_s1_ridge_oof)(i, X_tr_f, X_val_f, y_tr_f[:, i], n_tr_f)
+        for i in range(len(target_cols))
+    )
+    for i, pred in res_r:
+        meta_ridge[val_idx, i] = pred
     print(f"  Fold {fold_i + 1} done: {time.time() - start:.1f}s")
 
-# Full Stage 1 on all training data → test meta-predictions (parallel)
-print(f"\nStage 1 full (test preds): fitting {len(target_cols)} LR models [parallel]...")
+# Full Stage 1 models for test meta-predictions
+print(f"\nStage 1 full (LR + Ridge test preds) [parallel]...")
 res = Parallel(n_jobs=-1, prefer="threads")(
     delayed(_s1_full)(i, X_trt, y_trt[:, i], X_test_trt, n_trt)
     for i in range(len(target_cols))
 )
+meta_test_lr = np.zeros((n_test_trt, len(target_cols)))
 for i, pred in res:
-    meta_test_trt[:, i] = pred
+    meta_test_lr[:, i] = pred
+
+res_r = Parallel(n_jobs=-1, prefer="threads")(
+    delayed(_s1_ridge_full)(i, X_trt, y_trt[:, i], X_test_trt, n_trt)
+    for i in range(len(target_cols))
+)
+meta_test_ridge = np.zeros((n_test_trt, len(target_cols)))
+for i, pred in res_r:
+    meta_test_ridge[:, i] = pred
+
+# Concatenate LR and Ridge meta-features for richer PCA input
+meta_train = np.hstack([meta_lr, meta_ridge])
+meta_test_trt = np.hstack([meta_test_lr, meta_test_ridge])
 
 t1 = time.time() - start
 print(f"Stage 1 done in {t1:.1f}s")
