@@ -138,7 +138,7 @@ for i, col in enumerate(target_cols):
         preds[trt_test_mask, i] = max(pos_frac, 1e-5)
         continue
 
-    lr = LogisticRegression(C=2.0, solver="liblinear", max_iter=200, random_state=42)
+    lr = LogisticRegression(C=3.0, solver="liblinear", max_iter=200, random_state=42)
     lr.fit(X_trt2, y)
     prob = lr.predict_proba(X_test2)[:, 1]
     preds[trt_test_mask, i] = np.clip(prob, 1e-5, 1 - 1e-5)
