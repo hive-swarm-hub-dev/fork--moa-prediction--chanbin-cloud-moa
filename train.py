@@ -36,15 +36,18 @@ pca_c = PCA(n_components=35, whiten=True, random_state=42)
 g_pca = pca_g.fit_transform(all_feats[gene_cols].values)
 c_pca = pca_c.fit_transform(all_feats[cell_cols].values)
 
-cp_time_map = {24: 0.0, 48: 0.5, 72: 1.0}
 cp_dose_map = {"D1": 0.0, "D2": 1.0}
 cp_type_bin = (all_feats["cp_type"].values == "trt_cp").astype(float)
-cp_time_enc = np.array([cp_time_map[t] for t in all_feats["cp_time"].values])
+cp_time_24 = (all_feats["cp_time"].values == 24).astype(float)
+cp_time_48 = (all_feats["cp_time"].values == 48).astype(float)
+cp_time_72 = (all_feats["cp_time"].values == 72).astype(float)
 cp_dose_enc = np.array([cp_dose_map[d] for d in all_feats["cp_dose"].values])
 
 X_all = np.hstack([
     cp_type_bin.reshape(-1, 1),
-    cp_time_enc.reshape(-1, 1),
+    cp_time_24.reshape(-1, 1),
+    cp_time_48.reshape(-1, 1),
+    cp_time_72.reshape(-1, 1),
     cp_dose_enc.reshape(-1, 1),
     g_pca, c_pca,
 ])
