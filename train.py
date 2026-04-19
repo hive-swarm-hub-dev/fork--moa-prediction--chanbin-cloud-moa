@@ -1,22 +1,19 @@
 """
 Two-stage stacking LR: whitened PCA + 2-fold OOF SVD-compressed meta-features.
+Parallelized with joblib (threading backend; liblinear releases GIL) for 48-core use.
 
 Score history:
   baseline (no stacking, whitened PCA C=0.5):  -0.016141
   uncompressed stacking (319 features):         -0.016100
-  SVD-20 stacking (133 features, in-sample):    -0.016092  ← committed best
-  SVD-20 + StandardScaler (in-sample):          -0.016124  ← scaling hurts (distrib shift)
-  This attempt: 2-fold OOF so meta_train and meta_test both out-of-sample;
-  then StandardScaler is valid since both distributions match.
-
-Timing estimate: OOF(35+35) + full_S1(70) + S2(74) ≈ 214s.
+  SVD-20 stacking (133 features, in-sample):    -0.016092
+  OOF + PCA-whitened meta 200 + Stage2 C=20:    -0.015907  ← committed best
 """
 import pandas as pd
 import numpy as np
-from sklearn.decomposition import PCA, TruncatedSVD
+from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import KFold
-from sklearn.preprocessing import StandardScaler
+from joblib import Parallel, delayed
 import time
 
 start = time.time()
@@ -68,83 +65,85 @@ n_trt = int(trt_mask.sum())
 print(f"Treatment train: {n_trt}, Treatment test: {int(trt_test_mask.sum())}")
 print(f"Stage 1 features: {X_trt.shape[1]}")
 
-# ── Stage 1: 2-fold OOF meta-predictions ──────────────────────────────────────
-# OOF ensures meta_train and meta_test are both out-of-sample predictions,
-# matching distributions so StandardScaler on SVD components is valid.
+
+# ── Parallel worker functions (module-level for pickling) ─────────────────────
+
+def _s1_oof(i, X_tr, X_val, y_col, n_tr):
+    n_pos = int(y_col.sum())
+    if n_pos < 2:
+        return i, np.full(len(X_val), n_pos / n_tr)
+    lr = LogisticRegression(C=1.0, solver="liblinear", max_iter=100, random_state=42)
+    lr.fit(X_tr, y_col)
+    return i, lr.predict_proba(X_val)[:, 1]
+
+
+def _s1_full(i, X_tr, y_col, X_te, n_tr):
+    n_pos = int(y_col.sum())
+    if n_pos < 3:
+        return i, np.full(len(X_te), n_pos / n_tr)
+    lr = LogisticRegression(C=1.0, solver="liblinear", max_iter=100, random_state=42)
+    lr.fit(X_tr, y_col)
+    return i, lr.predict_proba(X_te)[:, 1]
+
+
+def _s2(i, X_tr, y_col, X_te, n_tr):
+    n_pos = int(y_col.sum())
+    if n_pos < 3:
+        return i, np.full(len(X_te), max(n_pos / n_tr, 1e-5))
+    lr = LogisticRegression(C=20.0, solver="liblinear", max_iter=200, random_state=42)
+    lr.fit(X_tr, y_col)
+    return i, np.clip(lr.predict_proba(X_te)[:, 1], 1e-5, 1 - 1e-5)
+
+
+# ── Stage 1: 2-fold OOF meta-predictions (parallel) ──────────────────────────
 kf = KFold(n_splits=2, shuffle=True, random_state=42)
 meta_train = np.zeros((n_trt, len(target_cols)))
 meta_test_trt = np.full((int(trt_test_mask.sum()), len(target_cols)), 1e-4)
 
-print(f"\nStage 1 OOF: fitting {len(target_cols)} LR models per fold...")
+print(f"\nStage 1 OOF: fitting {len(target_cols)} LR models per fold [parallel]...")
 for fold_i, (tr_idx, val_idx) in enumerate(kf.split(X_trt)):
-    X_tr_f, X_val_f = X_trt[tr_idx], X_trt[val_idx]
+    X_tr_f = X_trt[tr_idx]
+    X_val_f = X_trt[val_idx]
     y_tr_f = y_trt[tr_idx]
+    n_tr_f = len(tr_idx)
 
-    for i in range(len(target_cols)):
-        y_f = y_tr_f[:, i]
-        n_pos_f = int(y_f.sum())
-
-        if n_pos_f < 2:
-            meta_train[val_idx, i] = n_pos_f / len(tr_idx)
-            continue
-
-        lr = LogisticRegression(C=1.0, solver="liblinear", max_iter=100, random_state=42)
-        lr.fit(X_tr_f, y_f)
-        meta_train[val_idx, i] = lr.predict_proba(X_val_f)[:, 1]
-
+    res = Parallel(n_jobs=-1, prefer="threads")(
+        delayed(_s1_oof)(i, X_tr_f, X_val_f, y_tr_f[:, i], n_tr_f)
+        for i in range(len(target_cols))
+    )
+    for i, pred in res:
+        meta_train[val_idx, i] = pred
     print(f"  Fold {fold_i + 1} done: {time.time() - start:.1f}s")
 
-# Full Stage 1 on all training data → test meta-predictions
-print(f"\nStage 1 full (test preds): fitting {len(target_cols)} LR models...")
-for i in range(len(target_cols)):
-    y = y_trt[:, i]
-    n_pos = int(y.sum())
-    pos_frac = n_pos / n_trt
-
-    if n_pos < 3:
-        meta_test_trt[:, i] = pos_frac
-        continue
-
-    lr = LogisticRegression(C=1.0, solver="liblinear", max_iter=100, random_state=42)
-    lr.fit(X_trt, y)
-    meta_test_trt[:, i] = lr.predict_proba(X_test_trt)[:, 1]
-
-    if (i + 1) % 50 == 0:
-        print(f"  [{i+1}/{len(target_cols)}] elapsed: {time.time()-start:.1f}s")
+# Full Stage 1 on all training data → test meta-predictions (parallel)
+print(f"\nStage 1 full (test preds): fitting {len(target_cols)} LR models [parallel]...")
+res = Parallel(n_jobs=-1, prefer="threads")(
+    delayed(_s1_full)(i, X_trt, y_trt[:, i], X_test_trt, n_trt)
+    for i in range(len(target_cols))
+)
+for i, pred in res:
+    meta_test_trt[:, i] = pred
 
 t1 = time.time() - start
 print(f"Stage 1 done in {t1:.1f}s")
 
 # ── Stage 2: LR on [original features + OOF PCA-whitened meta-features] ──────
-# PCA(whiten=True) centers meta-predictions before decomposition, capturing
-# co-variation RELATIVE TO each target's baseline probability. This is more
-# informative than TruncatedSVD (no centering) + StandardScaler.
 pca_meta = PCA(n_components=200, whiten=True, random_state=42)
 meta_train_m = pca_meta.fit_transform(meta_train)
 meta_test_m = pca_meta.transform(meta_test_trt)
 X_trt2 = np.hstack([X_trt, meta_train_m])
 X_test2 = np.hstack([X_test_trt, meta_test_m])
 print(f"PCA meta: {pca_meta.n_components} components (OOF+whitened), var={pca_meta.explained_variance_ratio_.sum():.3f}")
-print(f"\nStage 2: fitting {len(target_cols)} LR models ({X_trt2.shape[1]} features)...")
+print(f"\nStage 2: fitting {len(target_cols)} LR models ({X_trt2.shape[1]} features) [parallel]...")
 
 preds = np.full((len(test_features), len(target_cols)), 1e-4)
 
-for i, col in enumerate(target_cols):
-    y = y_trt[:, i]
-    n_pos = int(y.sum())
-    pos_frac = n_pos / n_trt
-
-    if n_pos < 3:
-        preds[trt_test_mask, i] = max(pos_frac, 1e-5)
-        continue
-
-    lr = LogisticRegression(C=20.0, solver="liblinear", max_iter=200, random_state=42)
-    lr.fit(X_trt2, y)
-    prob = lr.predict_proba(X_test2)[:, 1]
-    preds[trt_test_mask, i] = np.clip(prob, 1e-5, 1 - 1e-5)
-
-    if (i + 1) % 50 == 0:
-        print(f"  [{i+1}/{len(target_cols)}] elapsed: {time.time()-start:.1f}s")
+res = Parallel(n_jobs=-1, prefer="threads")(
+    delayed(_s2)(i, X_trt2, y_trt[:, i], X_test2, n_trt)
+    for i in range(len(target_cols))
+)
+for i, pred in res:
+    preds[trt_test_mask, i] = pred
 
 elapsed = time.time() - start
 print(f"Stage 2 done. Total: {elapsed:.1f}s")
