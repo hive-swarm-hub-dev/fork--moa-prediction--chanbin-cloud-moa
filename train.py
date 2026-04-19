@@ -118,7 +118,7 @@ print(f"Stage 1 done in {t1:.1f}s")
 # ── Stage 2: LR on [original features + OOF SVD-compressed meta-features] ──────
 # SVD-20 compresses 206 OOF meta-predictions; StandardScaler valid since
 # both meta_train (OOF) and meta_test (full S1) are out-of-sample predictions.
-svd = TruncatedSVD(n_components=20, random_state=42)
+svd = TruncatedSVD(n_components=80, random_state=42)
 meta_train_svd = svd.fit_transform(meta_train)
 meta_test_svd = svd.transform(meta_test_trt)
 svd_scaler = StandardScaler()
